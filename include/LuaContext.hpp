@@ -708,7 +708,7 @@ private:
     /*                     MISC                       */
     /**************************************************/
     // type used as a tag
-    template<typename T>
+    template <typename... Tn>
     struct tag {};
 
     // tag for "the registry"
@@ -1596,13 +1596,13 @@ private:
      * This functions reads multiple values starting at "index" and passes them to the callback
      */
     template<typename TRetValue, typename TCallback>
-    static auto readIntoFunction(lua_State* state, tag<TRetValue>, TCallback&& callback, int index)
+    static auto readIntoFunction(lua_State* state, tag<TRetValue>, TCallback&& callback, int index, tag<>)
         -> TRetValue
     {
         return callback();
     }
     template<typename TRetValue, typename TCallback, typename TFirstType, typename... TTypes>
-    static auto readIntoFunction(lua_State* state, tag<TRetValue> retValueTag, TCallback&& callback, int index, tag<TFirstType>, tag<TTypes>... othersTags)
+    static auto readIntoFunction(lua_State* state, tag<TRetValue> retValueTag, TCallback&& callback, int index, tag<TFirstType, TTypes...>)
         -> typename std::enable_if<IsOptional<TFirstType>::value, TRetValue>::type
     {
         if (index >= 0) {
@@ -1615,11 +1615,10 @@ private:
             throw WrongTypeException(lua_typename(state, index), typeid(TFirstType));
 
         Binder<TCallback, const TFirstType&> binder{ callback, *firstElem };
-        return readIntoFunction(state, retValueTag, binder, index + 1, othersTags...);
+        return readIntoFunction(state, retValueTag, binder, index + 1, tag<TTypes...>());
     }
-    template<typename TRetValue, typename TCallback, typename TFirstType, typename... TTypes>
-    static auto readIntoFunction(lua_State* state, tag<TRetValue> retValueTag, TCallback&& callback, int index, tag<TFirstType>, tag<TTypes>... othersTags)
-        -> typename std::enable_if<!IsOptional<TFirstType>::value, TRetValue>::type
+    template<typename TRetValue, typename TCallback, typename TFirstType, typename... TTypes, typename = typename std::enable_if<!IsOptional<TFirstType>::value, TRetValue>::type>
+    static TRetValue readIntoFunction(lua_State* state, tag<TRetValue> retValueTag, TCallback&& callback, int index, tag<TFirstType, TTypes...>)
     {
         if (index >= 0)
             throw std::logic_error("Wrong number of parameters");
@@ -1629,7 +1628,7 @@ private:
             throw WrongTypeException(lua_typename(state, index), typeid(TFirstType));
 
         Binder<TCallback, const TFirstType&> binder{ callback, *firstElem };
-        return readIntoFunction(state, retValueTag, binder, index + 1, othersTags...);
+        return readIntoFunction(state, retValueTag, binder, index + 1, tag<TTypes...>());
     }
 
 
@@ -2240,14 +2239,14 @@ private:
         // pushing the result on the stack and returning number of pushed elements
         typedef Pusher<typename std::decay<TReturnType>::type>
             P;
-        return P::push(state, readIntoFunction(state, tag<TReturnType>{}, toCall, -argumentsCount, tag<TParameters>{}...));
+        return P::push(state, readIntoFunction(state, tag<TReturnType>{}, toCall, -argumentsCount, tag<TParameters...>{}));
     }
     
     template<typename TFunctionObject>
     static auto callback2(lua_State* state, TFunctionObject&& toCall, int argumentsCount)
         -> typename std::enable_if<std::is_void<TReturnType>::value && !std::is_void<TFunctionObject>::value, PushedObject>::type
     {
-        readIntoFunction(state, tag<TReturnType>{}, toCall, -argumentsCount, tag<TParameters>{}...);
+        readIntoFunction(state, tag<TReturnType>{}, toCall, -argumentsCount, tag<TParameters...>{});
         return PushedObject{state, 0};
     }
 };
