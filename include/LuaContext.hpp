@@ -65,6 +65,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #endif
 
 /**
+ * Type that holds a reference to a table.
+ * Can be used to create a table for setting reading/writing values to, or passing around.
+ */
+class LuaTable;
+
+/**
  * Defines a Lua context
  * A Lua context is used to interpret Lua code. Since everything in Lua is a variable (including functions),
  * we only provide few functions like readVariable and writeVariable.
@@ -74,6 +80,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  * it wants. These arguments may only be of basic types (int, float, etc.) or std::string.
  */
 class LuaContext {
+    friend LuaTable; // needs access to mState
     struct ValueInRegistry;
     template<typename TFunctionObject, typename TFirstParamType> struct Binder;
     template<typename T> struct IsOptional;
@@ -1824,6 +1831,61 @@ private:
     {}
 };
 
+// implementation of LuaTable
+class LuaTable
+{
+public:
+    // Allow public users to create brand new table
+    explicit LuaTable(LuaContext &context):
+    state(context.mState)
+    {
+        lua_newtable(state);
+        LuaContext::PushedObject pushed(state, 1);
+        valueHolder = std::make_shared<LuaContext::ValueInRegistry>(state);
+    }
+	
+	LuaTable(LuaTable const &) = default;
+	LuaTable& operator=(LuaTable&) = default;
+	LuaTable(LuaTable&&) = default;
+	LuaTable& operator=(LuaTable&&) & = default;
+    
+    template<typename TType>
+    TType readField(const std::string& name) const
+    {
+        auto t = push();
+        lua_getfield(state, -1, name.c_str());
+        return LuaContext::readTopAndPop<TType>(state, LuaContext::PushedObject{state, 1});
+    }
+    
+    template<typename TType>
+    void setField(const std::string& name, const TType &value)
+    {
+        auto t = push();
+        auto v = LuaContext::Pusher<TType>::push(state, value);
+		v.release(); // lua_setfield pops value form stack, don't need to keep PushedObject
+        lua_setfield(state, -2, name.c_str());
+    }
+    
+private:
+    std::shared_ptr<LuaContext::ValueInRegistry>    valueHolder;
+    lua_State*                          state;
+    
+private:
+    friend LuaContext;
+    
+    // Create LuaTable, from top of stack
+    explicit LuaTable(lua_State* state) :
+    valueHolder(std::make_shared<LuaContext::ValueInRegistry>(state)),
+    state(state)
+    {
+    }
+    
+    LuaContext::PushedObject push() const
+    {
+        return valueHolder->pop();
+    }
+};
+
 
 /**************************************************/
 /*                PUSH FUNCTIONS                  */
@@ -2387,6 +2449,17 @@ private:
     }
 };
 
+// LuaTable
+template<>
+struct LuaContext::Pusher<LuaTable> {
+    static const int minSize = 1;
+    static const int maxSize = 1;
+    
+    static PushedObject push(lua_State* state, const LuaTable &table) noexcept {
+        return table.push();
+    }
+};
+
 /**************************************************/
 /*                READ FUNCTIONS                  */
 /**************************************************/
@@ -2537,6 +2610,20 @@ struct LuaContext::Reader<std::function<TRetValue (TParameters...)>>
 		}
 
         return boost::none;
+    }
+};
+
+// LuaTable
+template<>
+struct LuaContext::Reader<LuaTable>
+{
+    static auto read(lua_State* state, int index)
+    -> boost::optional<LuaTable>
+    {
+        if (!lua_istable(state, index))
+            return boost::none;
+        
+        return LuaTable(state);
     }
 };
 
