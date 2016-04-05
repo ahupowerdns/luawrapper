@@ -1303,14 +1303,14 @@ private:
     // this function calls what is on the top of the stack and removes it (just like lua_call)
     // if an exception is triggered, the top of the stack will be removed anyway
     template<typename TReturnType, typename... TParameters>
-    static auto call(lua_State* state, PushedObject toCall, TParameters&&... input)
+    static auto call(lua_State* state, PushedObject toCall, const TParameters&&... input)
         -> TReturnType
     {
         typedef typename Tupleizer<TReturnType>::type
             RealReturnType;
         
         // we push the parameters on the stack
-        auto inArguments = Pusher<std::tuple<TParameters...>>::push(state, std::make_tuple(std::forward<TParameters>(input)...));
+        auto inArguments = Pusher<std::tuple<const TParameters...>>::push(state, std::make_tuple(std::forward<const TParameters>(input)...));
 
         // 
         const int outArgumentsCount = std::tuple_size<RealReturnType>::value;
@@ -1806,10 +1806,10 @@ template<typename TRetValue, typename... TParams>
 class LuaContext::LuaFunctionCaller<TRetValue (TParams...)>
 {
 public:
-    TRetValue operator()(TParams&&... params) const
+    TRetValue operator()(const TParams&&... params) const
     {
         auto obj = valueHolder->pop();
-        return call<TRetValue>(state, std::move(obj), std::forward<TParams>(params)...);
+        return LuaContext::call<TRetValue>(state, std::move(obj), std::forward<const typename std::remove_reference<TParams>::type>(params)...);
     }
 
 private:
