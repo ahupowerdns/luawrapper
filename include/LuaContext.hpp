@@ -147,6 +147,15 @@ public:
     }
     
     /**
+     * Be careful, don't break it.
+     * (Allows loading other libraries, etc.)
+     */
+    lua_State* state() noexcept
+    {
+        return mState;
+    }
+    
+    /**
      * Thrown when an error happens during execution of lua code (like not enough parameters for a function)
      */
     class ExecutionErrorException : public std::runtime_error
