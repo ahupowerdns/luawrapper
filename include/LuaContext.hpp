@@ -65,6 +65,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #endif
 
 /**
+ * Type that holds a reference to a table.
+ * Can be used to create a table for setting reading/writing values to, or passing around.
+ */
+class LuaTable;
+
+/**
  * Defines a Lua context
  * A Lua context is used to interpret Lua code. Since everything in Lua is a variable (including functions),
  * we only provide few functions like readVariable and writeVariable.
@@ -74,6 +80,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  * it wants. These arguments may only be of basic types (int, float, etc.) or std::string.
  */
 class LuaContext {
+    friend LuaTable; // needs access to mState
     struct ValueInRegistry;
     template<typename TFunctionObject, typename TFirstParamType> struct Binder;
     template<typename T> struct IsOptional;
@@ -137,6 +144,15 @@ public:
     {
         assert(mState);
         lua_close(mState);
+    }
+    
+    /**
+     * Be careful, don't break it.
+     * (Allows loading other libraries, etc.)
+     */
+    lua_State* state() noexcept
+    {
+        return mState;
     }
     
     /**
@@ -708,7 +724,7 @@ private:
     /*                     MISC                       */
     /**************************************************/
     // type used as a tag
-    template<typename T>
+    template <typename... Tn>
     struct tag {};
 
     // tag for "the registry"
@@ -1303,14 +1319,14 @@ private:
     // this function calls what is on the top of the stack and removes it (just like lua_call)
     // if an exception is triggered, the top of the stack will be removed anyway
     template<typename TReturnType, typename... TParameters>
-    static auto call(lua_State* state, PushedObject toCall, TParameters&&... input)
+    static auto call(lua_State* state, PushedObject toCall, const TParameters&&... input)
         -> TReturnType
     {
         typedef typename Tupleizer<TReturnType>::type
             RealReturnType;
         
         // we push the parameters on the stack
-        auto inArguments = Pusher<std::tuple<TParameters...>>::push(state, std::make_tuple(std::forward<TParameters>(input)...));
+        auto inArguments = Pusher<std::tuple<const TParameters...>>::push(state, std::make_tuple(std::forward<const TParameters>(input)...));
 
         // 
         const int outArgumentsCount = std::tuple_size<RealReturnType>::value;
@@ -1596,13 +1612,13 @@ private:
      * This functions reads multiple values starting at "index" and passes them to the callback
      */
     template<typename TRetValue, typename TCallback>
-    static auto readIntoFunction(lua_State* state, tag<TRetValue>, TCallback&& callback, int index)
+    static auto readIntoFunction(lua_State* state, tag<TRetValue>, TCallback&& callback, int index, tag<>)
         -> TRetValue
     {
         return callback();
     }
     template<typename TRetValue, typename TCallback, typename TFirstType, typename... TTypes>
-    static auto readIntoFunction(lua_State* state, tag<TRetValue> retValueTag, TCallback&& callback, int index, tag<TFirstType>, tag<TTypes>... othersTags)
+    static auto readIntoFunction(lua_State* state, tag<TRetValue> retValueTag, TCallback&& callback, int index, tag<TFirstType, TTypes...>)
         -> typename std::enable_if<IsOptional<TFirstType>::value, TRetValue>::type
     {
         if (index >= 0) {
@@ -1615,11 +1631,10 @@ private:
             throw WrongTypeException(lua_typename(state, index), typeid(TFirstType));
 
         Binder<TCallback, const TFirstType&> binder{ callback, *firstElem };
-        return readIntoFunction(state, retValueTag, binder, index + 1, othersTags...);
+        return readIntoFunction(state, retValueTag, binder, index + 1, tag<TTypes...>());
     }
-    template<typename TRetValue, typename TCallback, typename TFirstType, typename... TTypes>
-    static auto readIntoFunction(lua_State* state, tag<TRetValue> retValueTag, TCallback&& callback, int index, tag<TFirstType>, tag<TTypes>... othersTags)
-        -> typename std::enable_if<!IsOptional<TFirstType>::value, TRetValue>::type
+    template<typename TRetValue, typename TCallback, typename TFirstType, typename... TTypes, typename = typename std::enable_if<!IsOptional<TFirstType>::value, TRetValue>::type>
+    static TRetValue readIntoFunction(lua_State* state, tag<TRetValue> retValueTag, TCallback&& callback, int index, tag<TFirstType, TTypes...>)
     {
         if (index >= 0)
             throw std::logic_error("Wrong number of parameters");
@@ -1629,7 +1644,7 @@ private:
             throw WrongTypeException(lua_typename(state, index), typeid(TFirstType));
 
         Binder<TCallback, const TFirstType&> binder{ callback, *firstElem };
-        return readIntoFunction(state, retValueTag, binder, index + 1, othersTags...);
+        return readIntoFunction(state, retValueTag, binder, index + 1, tag<TTypes...>());
     }
 
 
@@ -1806,10 +1821,10 @@ template<typename TRetValue, typename... TParams>
 class LuaContext::LuaFunctionCaller<TRetValue (TParams...)>
 {
 public:
-    TRetValue operator()(TParams&&... params) const
+    TRetValue operator()(const TParams&&... params) const
     {
         auto obj = valueHolder->pop();
-        return call<TRetValue>(state, std::move(obj), std::forward<TParams>(params)...);
+        return LuaContext::call<TRetValue>(state, std::move(obj), std::forward<const typename std::remove_reference<TParams>::type>(params)...);
     }
 
 private:
@@ -1822,6 +1837,61 @@ private:
         valueHolder(std::make_shared<ValueInRegistry>(state)),
         state(state)
     {}
+};
+
+// implementation of LuaTable
+class LuaTable
+{
+public:
+    // Allow public users to create brand new table
+    explicit LuaTable(LuaContext &context):
+    state(context.mState)
+    {
+        lua_newtable(state);
+        LuaContext::PushedObject pushed(state, 1);
+        valueHolder = std::make_shared<LuaContext::ValueInRegistry>(state);
+    }
+	
+	LuaTable(LuaTable const &) = default;
+	LuaTable& operator=(LuaTable&) = default;
+	LuaTable(LuaTable&&) = default;
+	LuaTable& operator=(LuaTable&&) & = default;
+    
+    template<typename TType>
+    TType readField(const std::string& name) const
+    {
+        auto t = push();
+        lua_getfield(state, -1, name.c_str());
+        return LuaContext::readTopAndPop<TType>(state, LuaContext::PushedObject{state, 1});
+    }
+    
+    template<typename TType>
+    void setField(const std::string& name, const TType &value)
+    {
+        auto t = push();
+        auto v = LuaContext::Pusher<TType>::push(state, value);
+		v.release(); // lua_setfield pops value form stack, don't need to keep PushedObject
+        lua_setfield(state, -2, name.c_str());
+    }
+    
+private:
+    std::shared_ptr<LuaContext::ValueInRegistry>    valueHolder;
+    lua_State*                          state;
+    
+private:
+    friend LuaContext;
+    
+    // Create LuaTable, from top of stack
+    explicit LuaTable(lua_State* state) :
+    valueHolder(std::make_shared<LuaContext::ValueInRegistry>(state)),
+    state(state)
+    {
+    }
+    
+    LuaContext::PushedObject push() const
+    {
+        return valueHolder->pop();
+    }
 };
 
 
@@ -2240,14 +2310,14 @@ private:
         // pushing the result on the stack and returning number of pushed elements
         typedef Pusher<typename std::decay<TReturnType>::type>
             P;
-        return P::push(state, readIntoFunction(state, tag<TReturnType>{}, toCall, -argumentsCount, tag<TParameters>{}...));
+        return P::push(state, readIntoFunction(state, tag<TReturnType>{}, toCall, -argumentsCount, tag<TParameters...>{}));
     }
     
     template<typename TFunctionObject>
     static auto callback2(lua_State* state, TFunctionObject&& toCall, int argumentsCount)
         -> typename std::enable_if<std::is_void<TReturnType>::value && !std::is_void<TFunctionObject>::value, PushedObject>::type
     {
-        readIntoFunction(state, tag<TReturnType>{}, toCall, -argumentsCount, tag<TParameters>{}...);
+        readIntoFunction(state, tag<TReturnType>{}, toCall, -argumentsCount, tag<TParameters...>{});
         return PushedObject{state, 0};
     }
 };
@@ -2387,6 +2457,17 @@ private:
     }
 };
 
+// LuaTable
+template<>
+struct LuaContext::Pusher<LuaTable> {
+    static const int minSize = 1;
+    static const int maxSize = 1;
+    
+    static PushedObject push(lua_State* state, const LuaTable &table) noexcept {
+        return table.push();
+    }
+};
+
 /**************************************************/
 /*                READ FUNCTIONS                  */
 /**************************************************/
@@ -2483,10 +2564,11 @@ struct LuaContext::Reader<std::string>
     static auto read(lua_State* state, int index)
         -> boost::optional<std::string>
     {
-        const auto val = lua_tostring(state, index);
+        size_t length = 0;
+        const auto val = lua_tolstring(state, index, &length);
         if (val == 0)
             return boost::none;
-        return std::string(val);
+        return std::string(val, length);
     }
 };
 
@@ -2536,6 +2618,20 @@ struct LuaContext::Reader<std::function<TRetValue (TParameters...)>>
 		}
 
         return boost::none;
+    }
+};
+
+// LuaTable
+template<>
+struct LuaContext::Reader<LuaTable>
+{
+    static auto read(lua_State* state, int index)
+    -> boost::optional<LuaTable>
+    {
+        if (!lua_istable(state, index))
+            return boost::none;
+        
+        return LuaTable(state);
     }
 };
 
