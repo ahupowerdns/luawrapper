@@ -39,7 +39,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #else
 #   define EXCEPTION_HPP_NORETURN_MACRO [[noreturn]]
 #endif
-
+#if 0
 namespace std {
     class nested_exception {
     public:
@@ -80,5 +80,5 @@ namespace std {
         if (ptr) ptr->rethrow_nested();
     }
 }
-
+#endif
 #endif
