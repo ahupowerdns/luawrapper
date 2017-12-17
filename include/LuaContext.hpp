@@ -32,6 +32,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <complex>
 #include <cstring>
 #include <functional>
 #include <limits>
@@ -2567,6 +2568,23 @@ struct LuaContext::Reader<
             return static_cast<TType>(lua_tonumber(state, index));
 
 #       endif
+    }
+};
+
+// std::complex
+template<typename NumberType>
+struct LuaContext::Reader<
+            std::complex<NumberType>,
+            typename std::enable_if<std::is_floating_point<NumberType>::value>::type
+        >
+{
+    static auto read(lua_State* state, int index)
+        -> boost::optional<std::complex<NumberType>>
+    {
+        auto val = LuaContext::Reader<std::map<std::string, NumberType>>::read(state, index);
+        if(!val) return boost::none;
+
+        return std::complex{ val.get().count("re") ? val.get()["re"] : 0, val.get().count("im") ? val.get()["im"] : 0 };
     }
 };
 
