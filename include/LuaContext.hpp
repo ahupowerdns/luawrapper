@@ -2584,7 +2584,7 @@ struct LuaContext::Reader<
         auto val = LuaContext::Reader<std::map<std::string, NumberType>>::read(state, index);
         if(!val) return boost::none;
 
-        return std::complex{ val.get().count("re") ? val.get()["re"] : 0, val.get().count("im") ? val.get()["im"] : 0 };
+        return std::complex<NumberType>{ val.get().count("re") ? val.get()["re"] : 0, val.get().count("im") ? val.get()["im"] : 0 };
     }
 };
 
